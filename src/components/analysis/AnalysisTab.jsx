@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { analyzeClip } from '../../services/anthropic.js'
 import { MOCK_ANALYSIS } from '../../services/mockData.js'
+import VideoAnalysis from './VideoAnalysis.jsx'
 
 function InsightBlock({ type, text, variant = 'good' }) {
   const colors = {
@@ -81,6 +82,8 @@ export default function AnalysisTab({ clip }) {
       {analysis.insights.map((ins, i) => (
         <InsightBlock key={i} {...ins} />
       ))}
+
+      <VideoAnalysis clip={clip} />
     </div>
   )
 }
