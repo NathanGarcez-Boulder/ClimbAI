@@ -12,7 +12,8 @@ O ClimbAI democratiza o coaching de escalada usando visão computacional, físic
 2. [Início rápido](#início-rápido)
 3. [Estrutura do projeto](#estrutura-do-projeto)
 4. [Pipeline de análise](#pipeline-de-análise)
-5. [Motor de física — physics.js](#motor-de-física--physicsjs)
+5. [Vídeo anotado — como funciona](#vídeo-anotado--como-funciona)
+6. [Motor de física — physics.js](#motor-de-física--physicsjs)
    - [Centro de Gravidade (CoG)](#1-centro-de-gravidade-cog)
    - [Detecção de contatos](#2-detecção-de-contatos)
    - [Distribuição de forças — IDW](#3-distribuição-de-forças--idw)
@@ -20,12 +21,12 @@ O ClimbAI democratiza o coaching de escalada usando visão computacional, físic
    - [Carga dos dedos — Finger Load](#5-carga-dos-dedos--finger-load)
    - [Score composto](#6-score-composto-0100)
    - [Calibração pixel → metro](#7-calibração-pixel--metro)
-6. [Serviços](#serviços)
-7. [Planos e preços](#planos-e-preços)
-8. [Roadmap de sprints](#roadmap-de-sprints)
-9. [Referências científicas](#referências-científicas)
-10. [Segurança](#segurança)
-11. [Licença](#licença)
+7. [Serviços](#serviços)
+8. [Planos e preços](#planos-e-preços)
+9. [Roadmap de sprints](#roadmap-de-sprints)
+10. [Referências científicas](#referências-científicas)
+11. [Segurança](#segurança)
+12. [Licença](#licença)
 
 ---
 
@@ -35,9 +36,11 @@ O ClimbAI democratiza o coaching de escalada usando visão computacional, físic
 |--------|-----------|
 | Frontend | React 18 + Vite 5 |
 | Análise IA | Anthropic Claude Vision (claude-opus-4-5) |
+| Detecção de pose | MediaPipe PoseLandmarker (lite, GPU delegate, browser-side) |
 | Motor de física | `src/services/physics.js` (vanilla JS, zero dependências) |
+| Overlay de vídeo | Canvas 2D API + MediaRecorder (saída WebM VP9) |
 | Estilo | CSS-in-JS puro (sem biblioteca externa) |
-| Build | Vite — HMR, ESM nativo |
+| Build | Vite 5 — HMR, ESM nativo |
 
 ---
 
@@ -98,7 +101,9 @@ ClimbAI/
     │   └── useAnalysis.js             # Hook: análise com fallback para mock
     ├── services/
     │   ├── anthropic.js               # Integração Anthropic Claude Vision API
-    │   ├── physics.js                 # Motor de fisica e biomecânica
+    │   ├── physics.js                 # Motor de física e biomecânica
+    │   ├── poseDetection.js           # MediaPipe PoseLandmarker + conversão COCO-17
+    │   ├── overlayRenderer.js         # Renderização do overlay no canvas
     │   └── mockData.js                # Dados mock para desenvolvimento offline
     └── styles/
         └── global.css                 # Reset + paleta de cores + variáveis CSS
@@ -137,6 +142,65 @@ Cada frame de vídeo percorre este pipeline antes de chegar ao overlay:
       v
 [Renderização do overlay no canvas]
 ```
+
+---
+
+## Vídeo anotado — como funciona
+
+Após o upload e a análise do Claude, a aba **Analysis** exibe a seção **"Gerar vídeo anotado"**. O fluxo completo acontece 100% no navegador, sem enviar o vídeo para nenhum servidor externo.
+
+### Fluxo de uso
+
+1. Selecione o peso corporal e o tipo de pega (Full Crimp / Half Crimp / Open Hand / Pinch)
+2. Clique em **"Analisar e gerar vídeo"**
+3. O modelo MediaPipe (~6 MB) é baixado uma única vez e fica em cache
+4. O vídeo é processado frame a frame — a barra de progresso mostra o andamento
+5. O vídeo anotado aparece no player embutido para pré-visualização
+6. Clique em **"Baixar vídeo anotado (.webm)"** para salvar
+
+### O que aparece no overlay
+
+| Elemento | Descrição |
+|----------|-----------|
+| Skeleton colorido | Linhas entre articulações, cor varia por nível de torque (verde / âmbar / vermelho) |
+| Labels `XXNm` | Torque em Newton-metro em cada articulação (cotovelos, ombros, quadris, joelhos) |
+| Círculos verdes + `X.Xkg` | Força em kg nos pontos de contato ativos (mãos e pés em contato com a parede) |
+| Círculo laranja `CoG` | Centro de gravidade calculado frame a frame |
+| Caixa `TOTAL SCORE` | Score composto 0–100 no canto superior esquerdo |
+
+### Arquitetura técnica
+
+```
+[Frame do vídeo]
+      |
+      v
+[MediaPipe PoseLandmarker lite — GPU]   poseDetection.js
+      | 33 landmarks normalizados
+      v
+[landmarksToCOCO()]                     poseDetection.js
+      | 17 keypoints em pixels
+      v
+[calculateCoG + detectContacts + calculateIDW + calcTorques + calcFingerLoad + calcCompositeScore]
+      |                                  physics.js
+      v
+[drawOverlay()]                         overlayRenderer.js
+      | Canvas 2D com overlay renderizado
+      v
+[canvas.captureStream(30fps) → MediaRecorder]
+      |
+      v
+[Blob WebM VP9 → URL.createObjectURL → <video> + download]
+```
+
+### Detalhes de implementação
+
+**Detecção de pose:** `PoseLandmarker` em modo `VIDEO` — recebe timestamps monotônicos (`performance.now()`). O modelo lite roda a ~25-30 fps em hardware moderno com delegação GPU.
+
+**Conversão de landmarks:** MediaPipe retorna 33 pontos normalizados [0,1]. A função `landmarksToCOCO()` remapeia para o formato COCO-17 em pixels, que é o formato esperado por `physics.js`.
+
+**Gravação:** `canvas.captureStream(30)` cria um `MediaStream` do canvas. O `MediaRecorder` captura esse stream em chunks de 200ms. Ao final do vídeo, os chunks são combinados em um `Blob WebM`.
+
+**Qualidade de saída:** 5 Mbps de bitrate, codec VP9 (fallback VP8). Para converter para MP4, use HandBrake ou ffmpeg localmente.
 
 ---
 
@@ -387,6 +451,26 @@ Alternativa: usar a altura total do escalador em pixels vs altura real em metros
 
 ## Serviços
 
+### `src/services/poseDetection.js`
+
+Wrapper do MediaPipe PoseLandmarker para uso em vídeo.
+
+```js
+initPoseDetection()                          // carrega modelo (cached após 1ª chamada)
+detectFrame(videoEl, timestampMs)            // detecção síncrona em modo VIDEO
+landmarksToCOCO(landmarks, width, height)   // converte 33 MP landmarks → COCO-17 px
+```
+
+### `src/services/overlayRenderer.js`
+
+Renderiza o overlay biomecânico completo sobre um `CanvasRenderingContext2D`.
+
+```js
+drawOverlay(ctx, { kps, forces, torques, cog, score, width, height })
+```
+
+Elementos desenhados: skeleton colorido, torque labels, force circles, CoG marker, score box.
+
 ### `src/services/anthropic.js`
 
 Integração com a Anthropic Claude Vision API para análise qualitativa de frames.
@@ -437,32 +521,33 @@ const { analysis, loading, error, analyze } = useAnalysis()
 
 ## Roadmap de sprints
 
-### Sprint 1 — Física e torque
-- [ ] Integrar `physics.js` ao `PhysicsTab.jsx`
-- [ ] Exibir torques em Nm com color map sobre o skeleton
-- [ ] Exibir forças IDW (kg) nas mãos e pés
-- [ ] Exibir score composto no topo da AnalysisTab
-- [ ] Testes unitários das fórmulas
+### Sprint 1 — Física e torque ✅ Concluído
+- [x] `physics.js` — motor completo (CoG, IDW, torques, finger load, score)
+- [x] `poseDetection.js` — MediaPipe PoseLandmarker com conversão COCO-17
+- [x] `overlayRenderer.js` — skeleton colorido, labels Nm/kg, CoG, score box
+- [x] `VideoAnalysis.jsx` — pipeline completo: upload → pose → física → vídeo anotado
+- [x] Saída via MediaRecorder (WebM VP9, 5 Mbps, 30fps)
 
 ### Sprint 2 — Finger Load
 - [ ] Criar `src/components/analysis/FingerLoad.jsx`
 - [ ] Skeleton SVG das mãos com nós coloridos por carga
-- [ ] Barras por dedo com alertas automáticos
-- [ ] Integrar seleção de grip type no fluxo de análise
+- [ ] Barras por dedo com alertas automáticos de risco A2
+- [ ] Painel de finger load integrado ao vídeo anotado
 
 ### Sprint 3 — Hold Detection + overlay
-- [ ] Integrar modelo de detecção de agarres via API
+- [ ] Integrar modelo de detecção de agarres (via API ou ONNX browser-side)
 - [ ] Renderizar bounding boxes sobre o canvas do frame
 - [ ] Label "Next" para próximo agarre previsto
-- [ ] Overlay completo: skeleton + torques + CoG + holds
+- [ ] Labels qualitativos no overlay (Smooth, Stable, Use Tech)
 
-### Sprint 4 — Exportação
-- [ ] Vídeo anotado via MediaRecorder (canvas → MP4)
-- [ ] Relatório PDF via jsPDF
+### Sprint 4 — Exportação avançada
+- [ ] Conversão WebM → MP4 via ffmpeg.wasm (browser-side)
+- [ ] Relatório PDF via jsPDF (score, torques, finger load por frame-chave)
 - [ ] Histórico de sessões via localStorage
+- [ ] Comparação entre sessões (progresso temporal)
 
 ### Sprint 5 — Produto
-- [ ] Backend proxy para a API key (Node.js / Edge Function)
+- [ ] Backend proxy para API key (Node.js / Edge Function)
 - [ ] Autenticação de usuários
 - [ ] Painel do treinador (plano Academia)
 - [ ] App mobile (React Native)
